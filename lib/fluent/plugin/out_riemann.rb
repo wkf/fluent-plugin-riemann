@@ -1,4 +1,3 @@
-require 'pry'
 require 'riemann/client'
 
 class Fluent::RiemannOutput < Fluent::BufferedOutput
