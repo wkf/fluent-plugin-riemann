@@ -3,7 +3,7 @@ require 'riemann/client'
 class Fluent::RiemannOutput < Fluent::BufferedOutput
   Fluent::Plugin.register_output('riemann', self)
 
-  config_param :host, :string, :default => 'localhost'
+  config_param :host, :string, :default => '127.0.0.1'
   config_param :post, :integer, :default => 5555
   config_param :timeout, :integer, :default => 5
   config_param :protocol, :string, :default => 'tcp'
