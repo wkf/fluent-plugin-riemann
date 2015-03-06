@@ -1,15 +1,17 @@
 require 'riemann/client'
 
 class Fluent::RiemannOutput < Fluent::BufferedOutput
+  class ConnectionFailure < StandardError; end
   Fluent::Plugin.register_output('riemann', self)
 
-  config_param :host, :string, :default => '127.0.0.1'
-  config_param :post, :integer, :default => 5555
-  config_param :timeout, :integer, :default => 5
-  config_param :protocol, :string, :default => 'tcp'
-  config_param :service, :string, :default => nil
-  config_param :types, :string, :default => 'metric:float'
-  config_param :fields, :string, :default => 'message:description,level:state,metric'
+  config_param :host,     :string,  :default => '127.0.0.1'
+  config_param :port,     :integer, :default => 5555
+  config_param :timeout,  :integer, :default => 5
+  config_param :ttl,      :integer, :default => 90
+  config_param :protocol, :string,  :default => 'tcp'
+  config_param :fields,   :hash,    :default => {}
+  config_param :fields_from_metric, :string, :default => nil
+  config_param :service,  :string,  :default => 'default'
 
   def initialize
     super
@@ -17,17 +19,6 @@ class Fluent::RiemannOutput < Fluent::BufferedOutput
 
   def configure(c)
     super
-
-    @_types = parse_map(@types) do |k, t|
-      case t
-      when "string" then "to_s"
-      when "integer" then "to_i"
-      when "float" then "to_f"
-      else t
-      end
-    end
-
-    @_fields = parse_map(@fields) { |k, f| (f || k).to_sym }
   end
 
   def start
@@ -47,31 +38,42 @@ class Fluent::RiemannOutput < Fluent::BufferedOutput
     [tag, time, record].to_msgpack
   end
 
-  def write(chunk)
-    chunk.msgpack_each do |tag, time, record|
-      event = {
-        :time => time,
-        :service => @service,
-        :tags => tag.split('.')
-      }
-
-      @_fields.each { |k,v| event[v] = record[k] }
-      @_types.each { |k,t| event[k] = event[k].send(t) }
-
-      client << event
+  def remap(data)
+    if data.is_a? String
+      if data =~ /^\d+\.\d+$/
+        data = data.to_f
+      elsif data =~ /^\d+$/
+        data = data.to_i
+      else
+        data = nil
+      end
     end
+    data
   end
 
-  private
+  def write(chunk)
+    chunk.msgpack_each do |tag, time, record|
+        event = {
+          :time    => time,
+          :tag     => tag,
+          :service => @service,
+          :message => record["message"],
+          :path    => record["path"]
+        }
 
-  def parse_map(map, &block)
-    Hash[map.split(',').map do |m|
-      k, v = m.split(':').map(&:strip)
-      if block_given?
-        [k, yield(k, v)]
-      else
-        [k, v]
-      end
-    end]
+        retries = 0
+        begin
+          client << event
+        rescue Exception => e
+          if retries < 2
+            retries += 1
+            log.warn "Could not push metrics to Riemann, resetting connection and trying again. #{e.message}"
+            @_client = nil
+            sleep 2**retries
+            retry
+          end
+          raise ConnectionFailure, "Could not push metrics to Riemann after #{retries} retries. #{e.message}"
+        end
+    end
   end
 end
